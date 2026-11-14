@@ -1,29 +1,18 @@
 package com.bnpl.payment.service;
 
-import com.bnpl.common.constants.KafkaTopics;
 import com.bnpl.common.crypto.CardUtils;
-import com.bnpl.common.enums.OutboxStatus;
-import com.bnpl.common.enums.PaymentStatus;
-import com.bnpl.common.events.PaymentResultEvent;
-import com.bnpl.common.events.PaymentSettledEvent;
 import com.bnpl.payment.client.AcquiringBankClient;
 import com.bnpl.payment.config.PaymentProperties;
-import com.bnpl.payment.domain.OutboxMessageEntity;
 import com.bnpl.payment.domain.PaymentIntentEntity;
 import com.bnpl.payment.dto.ChargeRequest;
 import com.bnpl.payment.dto.ChargeResponse;
 import com.bnpl.payment.dto.MockBankChargeRequest;
 import com.bnpl.payment.dto.MockBankChargeResponse;
-import com.bnpl.payment.repository.OutboxMessageRepository;
 import com.bnpl.payment.repository.PaymentIntentRepository;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -33,32 +22,29 @@ public class PaymentService {
     private static final Logger log = LoggerFactory.getLogger(PaymentService.class);
 
     private final PaymentIntentRepository paymentIntentRepository;
-    private final OutboxMessageRepository outboxMessageRepository;
+    private final PaymentTransactionService transactionService;
     private final AcquiringBankClient acquiringBankClient;
     private final IdempotencyService idempotencyService;
     private final PaymentProperties paymentProperties;
-    private final ObjectMapper objectMapper;
 
     public PaymentService(PaymentIntentRepository paymentIntentRepository,
-                          OutboxMessageRepository outboxMessageRepository,
+                          PaymentTransactionService transactionService,
                           AcquiringBankClient acquiringBankClient,
                           IdempotencyService idempotencyService,
-                          PaymentProperties paymentProperties,
-                          ObjectMapper objectMapper) {
+                          PaymentProperties paymentProperties) {
         this.paymentIntentRepository = paymentIntentRepository;
-        this.outboxMessageRepository = outboxMessageRepository;
+        this.transactionService = transactionService;
         this.acquiringBankClient = acquiringBankClient;
         this.idempotencyService = idempotencyService;
         this.paymentProperties = paymentProperties;
-        this.objectMapper = objectMapper;
     }
 
     /**
      * Executes the charge flow with strict transaction isolation:
-     * 1. Check idempotency.
-     * 2. DB Tx 1: Save initial PaymentIntent (status = PROCESSING).
-     * 3. Network Call OUTSIDE Tx: Call acquiring bank.
-     * 4. DB Tx 2: Finalize PaymentIntent and write Outbox event.
+     * 1. Check idempotency (Redis + DB) outside transaction.
+     * 2. DB Tx 1 via PaymentTransactionService: Save initial PaymentIntent (status = PROCESSING).
+     * 3. Network Call STRICTLY OUTSIDE Tx: Call acquiring bank via HTTP (zero DB connection held).
+     * 4. DB Tx 2 via PaymentTransactionService: Finalize PaymentIntent and write Outbox event.
      */
     public ChargeResponse processCharge(ChargeRequest request) {
         String idempotencyKey = request.idempotencyKey();
@@ -105,15 +91,15 @@ public class PaymentService {
 
             UUID intentId = UUID.randomUUID();
 
-            // STEP 1 (Short Transaction): Persist intent
-            createInitialPaymentIntent(intentId, request, cardMask, cardToken, cardBlindHash);
+            // STEP 1 (Short Transaction via dedicated service): Persist intent
+            transactionService.createInitialPaymentIntent(intentId, request, cardMask, cardToken, cardBlindHash);
 
-            // STEP 2 (STRICTLY OUTSIDE TRANSACTION): Call Acquiring Bank
+            // STEP 2 (STRICTLY OUTSIDE TRANSACTION): Call Acquiring Bank over HTTP (zero DB connection held)
             MockBankChargeRequest bankRequest = new MockBankChargeRequest(cardMask, request.amount(), intentId.toString());
             MockBankChargeResponse bankResponse = acquiringBankClient.charge(bankRequest);
 
-            // STEP 3 (Short Transaction): Finalize intent & write outbox event
-            PaymentIntentEntity finalizedEntity = finalizePaymentIntent(intentId, bankResponse);
+            // STEP 3 (Short Transaction via dedicated service): Finalize intent & write outbox event atomically
+            PaymentIntentEntity finalizedEntity = transactionService.finalizePaymentIntent(intentId, bankResponse);
 
             ChargeResponse chargeResponse = toChargeResponse(finalizedEntity);
             idempotencyService.saveResponse(idempotencyKey, chargeResponse);
@@ -125,82 +111,8 @@ public class PaymentService {
         }
     }
 
-    @Transactional
-    public PaymentIntentEntity createInitialPaymentIntent(UUID intentId,
-                                                          ChargeRequest request,
-                                                          String cardMask,
-                                                          String cardToken,
-                                                          String cardBlindHash) {
-        PaymentIntentEntity entity = new PaymentIntentEntity(
-                intentId,
-                request.idempotencyKey(),
-                request.orderId(),
-                request.installmentId(),
-                request.amount(),
-                cardMask,
-                cardToken,
-                cardBlindHash,
-                PaymentStatus.PROCESSING,
-                Instant.now()
-        );
-        return paymentIntentRepository.save(entity);
-    }
-
-    @Transactional
     public PaymentIntentEntity finalizePaymentIntent(UUID intentId, MockBankChargeResponse bankResponse) {
-        PaymentIntentEntity intent = paymentIntentRepository.findById(intentId)
-                .orElseThrow(() -> new IllegalStateException("Payment intent not found: " + intentId));
-
-        if (bankResponse.success()) {
-            intent.markSucceeded(bankResponse.transactionId());
-
-            // Write PaymentSettledEvent to transactional outbox
-            PaymentSettledEvent event = new PaymentSettledEvent(
-                    intent.getId(),
-                    intent.getOrderId(),
-                    intent.getInstallmentId(),
-                    intent.getAmount(),
-                    bankResponse.transactionId(),
-                    Instant.now()
-            );
-
-            saveOutboxMessage("PaymentIntent", intent.getId(), KafkaTopics.PAYMENTS_RESULTS, event);
-        } else {
-            intent.markFailed(bankResponse.errorCode());
-
-            // Write PaymentResultEvent (failed) to transactional outbox
-            PaymentResultEvent failureEvent = new PaymentResultEvent(
-                    intent.getId(),
-                    intent.getOrderId(),
-                    intent.getInstallmentId(),
-                    PaymentStatus.FAILED,
-                    null,
-                    bankResponse.errorCode(),
-                    Instant.now()
-            );
-
-            saveOutboxMessage("PaymentIntent", intent.getId(), KafkaTopics.PAYMENTS_RESULTS, failureEvent);
-        }
-
-        return paymentIntentRepository.save(intent);
-    }
-
-    private void saveOutboxMessage(String aggregateType, UUID aggregateId, String topic, Object payload) {
-        try {
-            String payloadJson = objectMapper.writeValueAsString(payload);
-            OutboxMessageEntity outbox = new OutboxMessageEntity(
-                    UUID.randomUUID(),
-                    aggregateType,
-                    aggregateId,
-                    topic,
-                    payloadJson,
-                    OutboxStatus.PENDING,
-                    Instant.now()
-            );
-            outboxMessageRepository.save(outbox);
-        } catch (JsonProcessingException e) {
-            throw new IllegalStateException("Failed to serialize outbox message", e);
-        }
+        return transactionService.finalizePaymentIntent(intentId, bankResponse);
     }
 
     private ChargeResponse toChargeResponse(PaymentIntentEntity entity) {

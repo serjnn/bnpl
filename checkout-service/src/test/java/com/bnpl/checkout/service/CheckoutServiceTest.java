@@ -42,6 +42,7 @@ class CheckoutServiceTest {
     @Mock
     private PaymentServiceClient paymentServiceClient;
 
+    private CheckoutTransactionService transactionService;
     private CheckoutService checkoutService;
     private ObjectMapper objectMapper;
 
@@ -49,7 +50,8 @@ class CheckoutServiceTest {
     void setUp() {
         objectMapper = new ObjectMapper();
         objectMapper.registerModule(new JavaTimeModule());
-        checkoutService = new CheckoutService(orderRepository, outboxMessageRepository, paymentServiceClient, objectMapper);
+        transactionService = new CheckoutTransactionService(orderRepository, outboxMessageRepository, objectMapper);
+        checkoutService = new CheckoutService(orderRepository, transactionService, paymentServiceClient);
     }
 
     @Test

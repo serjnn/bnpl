@@ -16,11 +16,11 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 @Service
 public class NightlyBillingScheduler {
@@ -28,15 +28,18 @@ public class NightlyBillingScheduler {
     private static final Logger log = LoggerFactory.getLogger(NightlyBillingScheduler.class);
 
     private final InstallmentRepository installmentRepository;
+    private final InstallmentStateService installmentStateService;
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final ObjectMapper objectMapper;
     private final int batchSize;
 
     public NightlyBillingScheduler(InstallmentRepository installmentRepository,
+                                   InstallmentStateService installmentStateService,
                                    KafkaTemplate<String, String> kafkaTemplate,
                                    ObjectMapper objectMapper,
                                    @Value("${bnpl.billing.batch-size:50}") int batchSize) {
         this.installmentRepository = installmentRepository;
+        this.installmentStateService = installmentStateService;
         this.kafkaTemplate = kafkaTemplate;
         this.objectMapper = objectMapper;
         this.batchSize = batchSize;
@@ -45,6 +48,10 @@ public class NightlyBillingScheduler {
     /**
      * Nightly distributed billing job with ShedLock.
      * Uses strictly Keyset/Cursor pagination to prevent OFFSET/LIMIT table scans.
+     *
+     * STRICT TRANSACTION BOUNDARIES:
+     * 1. Short Tx per installment: mark as PROCESSING and enforce optimistic locking (@Version).
+     * 2. STRICTLY OUTSIDE Tx: publish ProcessPaymentCommand to Kafka over network (zero DB connection held).
      */
     @Scheduled(cron = "${bnpl.billing.cron:0 0 1 * * ?}")
     @SchedulerLock(name = "nightlyBillingLock", lockAtMostFor = "10m", lockAtLeastFor = "10s")
@@ -69,7 +76,14 @@ public class NightlyBillingScheduler {
             for (InstallmentEntity installment : batch) {
                 lastSeenId = installment.getId();
                 try {
-                    dispatchPaymentCommand(installment);
+                    // STEP 1: Short DB transaction to advance state and check optimistic lock
+                    InstallmentEntity updated = installmentStateService.markAsProcessing(installment.getId());
+                    if (updated == null) {
+                        continue;
+                    }
+
+                    // STEP 2: Network I/O STRICTLY OUTSIDE ANY DB TRANSACTION
+                    dispatchPaymentCommand(updated);
                     totalProcessed++;
                 } catch (ObjectOptimisticLockingFailureException e) {
                     log.warn("Optimistic lock conflict processing installment {}: concurrent update detected", installment.getId());
@@ -84,14 +98,10 @@ public class NightlyBillingScheduler {
     }
 
     /**
-     * Updates installment status to PROCESSING within a transaction enforcing @Version optimistic lock,
-     * and dispatches payment command to Kafka.
+     * Dispatches payment command to Kafka over the network.
+     * STRICTLY OUTSIDE ANY DATABASE TRANSACTION.
      */
-    @Transactional
     public void dispatchPaymentCommand(InstallmentEntity installment) {
-        installment.markProcessing();
-        installmentRepository.save(installment);
-
         UUID paymentIntentId = UUID.randomUUID();
         String idempotencyKey = "billing-" + installment.getId() + "-v" + installment.getVersion();
 
@@ -107,13 +117,11 @@ public class NightlyBillingScheduler {
         try {
             String payload = objectMapper.writeValueAsString(command);
             kafkaTemplate.send(KafkaTopics.PAYMENTS_COMMANDS, installment.getSchedule().getOrderId().toString(), payload)
-                    .whenComplete((result, ex) -> {
-                        if (ex != null) {
-                            log.error("Failed to publish payment command for installment {}: {}", installment.getId(), ex.getMessage());
-                        }
-                    });
+                    .get(5, TimeUnit.SECONDS);
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Failed to serialize ProcessPaymentCommand", e);
+        } catch (Exception e) {
+            log.error("Failed to publish payment command for installment {}: {}", installment.getId(), e.getMessage());
         }
     }
 }

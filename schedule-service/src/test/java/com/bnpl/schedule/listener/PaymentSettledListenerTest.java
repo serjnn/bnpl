@@ -9,7 +9,9 @@ import com.bnpl.schedule.domain.InstallmentEntity;
 import com.bnpl.schedule.domain.PaymentScheduleEntity;
 import com.bnpl.schedule.repository.InstallmentRepository;
 import com.bnpl.schedule.repository.PaymentScheduleRepository;
+import com.bnpl.schedule.service.InstallmentSettlementService;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -35,17 +37,20 @@ class PaymentSettledListenerTest {
     @Mock
     private PaymentScheduleRepository scheduleRepository;
 
+    private InstallmentSettlementService settlementService;
     private PaymentSettledListener listener;
     private ObjectMapper objectMapper;
 
     @BeforeEach
     void setUp() {
         objectMapper = new ObjectMapper();
-        listener = new PaymentSettledListener(installmentRepository, scheduleRepository, objectMapper);
+        objectMapper.registerModule(new JavaTimeModule());
+        settlementService = new InstallmentSettlementService(installmentRepository, scheduleRepository);
+        listener = new PaymentSettledListener(settlementService, objectMapper);
     }
 
     @Test
-    void shouldMarkInstallmentPaidAndReduceDebt() {
+    void shouldMarkInstallmentPaidAndReduceDebt() throws Exception {
         UUID installmentId = UUID.randomUUID();
         UUID orderId = UUID.randomUUID();
         PaymentScheduleEntity schedule = new PaymentScheduleEntity(
@@ -64,7 +69,8 @@ class PaymentSettledListenerTest {
                 UUID.randomUUID(), orderId, installmentId, new BigDecimal("25.00"), "tx_123", Instant.now()
         );
 
-        listener.handlePaymentSettled(event);
+        String jsonPayload = objectMapper.writeValueAsString(event);
+        listener.onPaymentResult(jsonPayload);
 
         assertThat(installment.getStatus()).isEqualTo(InstallmentStatus.PAID);
         assertThat(schedule.getRemainingDebt()).isEqualByComparingTo(BigDecimal.ZERO);
@@ -75,7 +81,7 @@ class PaymentSettledListenerTest {
     }
 
     @Test
-    void shouldMarkInstallmentAndScheduleOverdueOnFailure() {
+    void shouldMarkInstallmentAndScheduleOverdueOnFailure() throws Exception {
         UUID installmentId = UUID.randomUUID();
         UUID orderId = UUID.randomUUID();
         PaymentScheduleEntity schedule = new PaymentScheduleEntity(
@@ -94,11 +100,11 @@ class PaymentSettledListenerTest {
                 UUID.randomUUID(), orderId, installmentId, PaymentStatus.FAILED, null, "INSUFFICIENT_FUNDS", Instant.now()
         );
 
-        listener.handlePaymentFailed(event);
+        String jsonPayload = objectMapper.writeValueAsString(event);
+        listener.onPaymentResult(jsonPayload);
 
         assertThat(installment.getStatus()).isEqualTo(InstallmentStatus.OVERDUE);
         assertThat(schedule.getStatus()).isEqualTo(ScheduleStatus.OVERDUE);
-
         verify(installmentRepository).save(installment);
         verify(scheduleRepository).save(schedule);
     }

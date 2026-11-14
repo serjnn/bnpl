@@ -19,6 +19,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
@@ -37,13 +38,15 @@ class NightlyBillingSchedulerTest {
     @Mock
     private KafkaTemplate<String, String> kafkaTemplate;
 
+    private InstallmentStateService installmentStateService;
     private NightlyBillingScheduler scheduler;
     private ObjectMapper objectMapper;
 
     @BeforeEach
     void setUp() {
         objectMapper = new ObjectMapper();
-        scheduler = new NightlyBillingScheduler(installmentRepository, kafkaTemplate, objectMapper, 2);
+        installmentStateService = new InstallmentStateService(installmentRepository);
+        scheduler = new NightlyBillingScheduler(installmentRepository, installmentStateService, kafkaTemplate, objectMapper, 2);
     }
 
     @Test
@@ -76,16 +79,18 @@ class NightlyBillingSchedulerTest {
                 eq(InstallmentStatus.PENDING), any(LocalDate.class), eq(inst2.getId()), any(Pageable.class)))
                 .thenReturn(Collections.emptyList());
 
-        when(installmentRepository.save(any(InstallmentEntity.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(installmentRepository.findById(inst1.getId())).thenReturn(Optional.of(inst1));
+        when(installmentRepository.findById(inst2.getId())).thenReturn(Optional.of(inst2));
+        when(installmentRepository.saveAndFlush(any(InstallmentEntity.class))).thenAnswer(inv -> inv.getArgument(0));
         when(kafkaTemplate.send(any(String.class), any(String.class), any(String.class)))
-                .thenReturn(new CompletableFuture<>());
+                .thenReturn(CompletableFuture.completedFuture(null));
 
         int processed = scheduler.executeBillingJob();
 
         assertThat(processed).isEqualTo(2);
         assertThat(inst1.getStatus()).isEqualTo(InstallmentStatus.PROCESSING);
         assertThat(inst2.getStatus()).isEqualTo(InstallmentStatus.PROCESSING);
-        verify(installmentRepository).save(inst1);
-        verify(installmentRepository).save(inst2);
+        verify(installmentRepository).saveAndFlush(inst1);
+        verify(installmentRepository).saveAndFlush(inst2);
     }
 }

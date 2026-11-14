@@ -72,3 +72,16 @@
   - Mandatory engineering rules reference.
   - Docker Compose startup guide.
   - 7 actionable verification scenarios with `curl` and SQL inspection queries.
+
+### Phase 6: Refactoring — Strict Transaction Boundaries & External I/O Isolation
+- [x] Eliminating Spring AOP proxy self-invocation bypass:
+  - `CheckoutTransactionService`: isolated short DB transactions for `createInitialOrder` and `finalizeOrder` (atomic order update + outbox write).
+  - `PaymentTransactionService`: isolated short DB transactions for `createInitialPaymentIntent` and `finalizePaymentIntent` (atomic intent update + outbox write).
+  - `InstallmentStateService`: isolated short DB transaction for advancing installment to `PROCESSING` with `@Version` optimistic locking check.
+  - `InstallmentSettlementService`: isolated short DB transaction for settlement updates and schedule balance reductions.
+- [x] External network I/O strictly outside `@Transactional` blocks:
+  - `checkout-service`: Synchronous HTTP call to `payment-service` executes completely outside DB transactions.
+  - `payment-service`: Synchronous HTTP call to Acquiring Bank executes completely outside DB transactions.
+  - `schedule-service`: Kafka `ProcessPaymentCommand` dispatch executed only after optimistic lock commit, strictly outside DB transactions.
+  - `OutboxPublisherService` (both checkout and payment services): Poller removed `@Transactional` from batch loop; Kafka publishing executed outside DB transactions with timeout; messages marked `SENT` in dedicated short transactions only after confirmed ACK.
+- [x] Full test suite verified and passing across all modules.

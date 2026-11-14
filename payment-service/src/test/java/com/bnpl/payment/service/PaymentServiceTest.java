@@ -47,6 +47,7 @@ class PaymentServiceTest {
     @Mock
     private IdempotencyService idempotencyService;
 
+    private PaymentTransactionService transactionService;
     private PaymentService paymentService;
     private ObjectMapper objectMapper;
 
@@ -56,13 +57,18 @@ class PaymentServiceTest {
         objectMapper.registerModule(new JavaTimeModule());
         PaymentProperties properties = new PaymentProperties("whsec_test", "pep_test_pepper");
 
-        paymentService = new PaymentService(
+        transactionService = new PaymentTransactionService(
                 paymentIntentRepository,
                 outboxMessageRepository,
+                objectMapper
+        );
+
+        paymentService = new PaymentService(
+                paymentIntentRepository,
+                transactionService,
                 acquiringBankClient,
                 idempotencyService,
-                properties,
-                objectMapper
+                properties
         );
     }
 

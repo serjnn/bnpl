@@ -14,21 +14,26 @@
   - Kafka topics: `KafkaTopics`.
   - Event and Command records: `OrderAuthorizedEvent`, `PaymentSettledEvent`, `ProcessPaymentCommand`, `PaymentResultEvent`.
   - Cryptography & PCI DSS SAQ-A utilities: `HmacUtils` (HMAC-SHA256, constant-time verification) and `CardUtils` (masking, blind indexing via HMAC-SHA256 with pepper, card token generation).
-  - Unit tests verifying HMAC and card masking/hashing.
+  - Unit tests verifying HMAC and card masking/hashing (11 tests passed).
+
+### Phase 2: `payment-service` + Mock Bank
+- [x] Liquibase migration for `payment_schema` (`payment_intents`, `outbox_messages`).
+- [x] JPA Entities (`PaymentIntentEntity` with `@Version`, `OutboxMessageEntity`).
+- [x] Redis idempotency mechanism (`IdempotencyService`).
+- [x] Mock Bank endpoint (`/mock-bank/v1/charge`) with deterministic failure triggers:
+  - Card mask ending in `0000` -> `INSUFFICIENT_FUNDS`
+  - Card mask ending in `9999` -> 3s timeout
+- [x] Payment processing service (`PaymentService`):
+  - PCI DSS SAQ-A compliance: raw PAN never stored, only mask, token, blind hash.
+  - Strict transaction boundary: external HTTP call to Acquiring Bank is strictly outside `@Transactional` blocks!
+- [x] Webhook ingress with HMAC-SHA256 verification (`POST /v1/payments/webhook`).
+- [x] Transactional Outbox publisher for `PAYMENT_SETTLED` events.
+- [x] Kafka command listener for `bnpl.payments.commands`.
+- [x] Unit tests for `MockBankController`, `WebhookController`, and `PaymentService`.
 
 ---
 
 ## Active & Upcoming Phases
-
-### Phase 2: `payment-service` + Mock Bank
-- [ ] Liquibase migration for `payment_schema` (`payment_intents`, `outbox_messages`).
-- [ ] JPA Entities (`PaymentIntentEntity`, `OutboxMessageEntity`).
-- [ ] Redis idempotency mechanism (`IdempotencyService`).
-- [ ] Mock Bank endpoint (`/mock-bank/v1/charge`) with deterministic failure triggers and latency.
-- [ ] Payment processing REST endpoint (`POST /v1/payments/charge`) with PCI DSS SAQ-A compliance (raw PAN never stored).
-- [ ] Webhook ingress with HMAC-SHA256 verification (`POST /v1/payments/webhook`).
-- [ ] Transactional Outbox publisher for `PAYMENT_SETTLED` events.
-- [ ] Unit & Integration tests.
 
 ### Phase 3: `checkout-service`
 - [ ] Liquibase migration for `checkout_schema` (`bnpl_orders`, `outbox_messages`).

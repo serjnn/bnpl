@@ -1,0 +1,29 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:payment_db;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  jpa:
+    database-platform: org.hibernate.dialect.H2Dialect
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        default_batch_fetch_size: 20
+        format_sql: false
+        generate_statistics: true
+  liquibase:
+    enabled: false
+  kafka:
+    bootstrap-servers: localhost:9092
+    listener:
+      auto-startup: false
+
+bnpl:
+  security:
+    webhook-secret: whsec_9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c
+    blind-index-pepper: pep_1a2b3c4d5e6f7g8h9i0j1k2l3m4n5o6p
+  acquiring:
+    gateway-url: http://localhost:8082/mock-bank/v1/charge
+    timeout-ms: 4000

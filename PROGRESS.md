@@ -65,13 +65,10 @@
 - [x] REST endpoints: `GET /v1/schedules/{orderId}`, `POST /v1/schedules/billing/run`.
 - [x] Testcontainers integration tests on PostgreSQL 16 verifying keyset cursor pagination (zero N+1) and `@Version` optimistic locking (`ObjectOptimisticLockingFailureException`).
 
----
-
-## Active & Upcoming Phases
-
 ### Phase 5: End-to-End Verification & Documentation
-- [ ] `README.md` with architecture guide, Docker Compose instructions, and copy-pasteable `curl` scenarios:
-  1. Checkout flow (order creation + sync 1st share charge).
-  2. Idempotency duplicate rejection.
-  3. Triggering the nightly billing job to charge installment #2.
-  4. Verifying final balances and statuses in PostgreSQL.
+- [x] `README.md` created with:
+  - Architecture overview and ASCII flow diagram.
+  - Microservices port map and isolated PostgreSQL schemas.
+  - Mandatory engineering rules reference.
+  - Docker Compose startup guide.
+  - 7 actionable verification scenarios with `curl` and SQL inspection queries.

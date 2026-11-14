@@ -44,17 +44,34 @@
 - [x] REST endpoints: `POST /v1/orders/checkout`, `GET /v1/orders/{id}`.
 - [x] Unit tests for `CheckoutService` (4 tests passed).
 
+### Phase 4: `schedule-service` & Nightly Billing
+- [x] Liquibase migration for `schedule_schema` (`payment_schedules`, `installments`, `shedlock`).
+- [x] Composite cursor index: `CREATE INDEX idx_installments_due_cursor ON schedule_schema.installments (status, due_date, id);`.
+- [x] JPA Entities: `PaymentScheduleEntity` and `InstallmentEntity` with `@Version` optimistic locking.
+- [x] Kafka consumer for `ORDER_AUTHORIZED` (`OrderAuthorizedListener`):
+  - Generates 4-installment schedule.
+  - Installment 1: `PAID` (due today).
+  - Installment 2: `PENDING` (due in 14 days).
+  - Installment 3: `PENDING` (due in 28 days).
+  - Installment 4: `PENDING` (due in 42 days) with penny-balancing invariant: `share4 = totalAmount - (share1 + share2 + share3)`.
+- [x] Distributed nightly billing scheduler with ShedLock (`NightlyBillingScheduler`):
+  - Strictly uses Keyset / Cursor pagination (`findDueInstallmentsWithSchedule`).
+  - Updates installment status to `PROCESSING` with `@Version` optimistic locking.
+  - Publishes `ProcessPaymentCommand` to Kafka `bnpl.payments.commands`.
+- [x] Kafka consumer for `PAYMENT_SETTLED` (`PaymentSettledListener`):
+  - Updates installment to `PAID` with `@Version` optimistic locking.
+  - Reduces `remainingDebt` and marks schedule `COMPLETED` when fully repaid.
+  - Handles payment failure by marking installment and schedule `OVERDUE`.
+- [x] REST endpoints: `GET /v1/schedules/{orderId}`, `POST /v1/schedules/billing/run`.
+- [x] Testcontainers integration tests on PostgreSQL 16 verifying keyset cursor pagination (zero N+1) and `@Version` optimistic locking (`ObjectOptimisticLockingFailureException`).
+
 ---
 
 ## Active & Upcoming Phases
 
-### Phase 4: `schedule-service` & Nightly Billing
-- [ ] Liquibase migration for `schedule_schema` (`payment_schedules`, `installments`, `shedlock`).
-- [ ] JPA Entities (`PaymentScheduleEntity`, `InstallmentEntity` with `@Version`).
-- [ ] Kafka consumer for `ORDER_AUTHORIZED` -> 4 installments generation with penny-balancing on 4th share.
-- [ ] Distributed nightly billing scheduler with ShedLock + Keyset/Cursor pagination.
-- [ ] Kafka consumer for `PAYMENT_SETTLED` -> installment update with `@Version` optimistic locking.
-- [ ] Unit & Integration tests.
-
 ### Phase 5: End-to-End Verification & Documentation
-- [ ] `README.md` with curl test scripts for checkout, idempotency duplicate rejection, billing cron trigger, balance verification.
+- [ ] `README.md` with architecture guide, Docker Compose instructions, and copy-pasteable `curl` scenarios:
+  1. Checkout flow (order creation + sync 1st share charge).
+  2. Idempotency duplicate rejection.
+  3. Triggering the nightly billing job to charge installment #2.
+  4. Verifying final balances and statuses in PostgreSQL.

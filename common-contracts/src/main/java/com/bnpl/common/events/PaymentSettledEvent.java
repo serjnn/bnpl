@@ -1,0 +1,16 @@
+package com.bnpl.common.events;
+
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Positive;
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.util.UUID;
+
+public record PaymentSettledEvent(
+        @NotNull UUID paymentIntentId,
+        @NotNull UUID orderId,
+        UUID installmentId,
+        @NotNull @Positive BigDecimal amount,
+        @NotNull String externalTxId,
+        @NotNull Instant settledAt
+) {}

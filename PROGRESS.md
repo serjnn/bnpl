@@ -29,18 +29,24 @@
 - [x] Webhook ingress with HMAC-SHA256 verification (`POST /v1/payments/webhook`).
 - [x] Transactional Outbox publisher for `PAYMENT_SETTLED` events.
 - [x] Kafka command listener for `bnpl.payments.commands`.
-- [x] Unit tests for `MockBankController`, `WebhookController`, and `PaymentService`.
+- [x] Unit tests for `MockBankController`, `WebhookController`, and `PaymentService` (8 tests passed).
+
+### Phase 3: `checkout-service`
+- [x] Liquibase migration for `checkout_schema` (`bnpl_orders`, `outbox_messages`).
+- [x] JPA Entities (`BnplOrderEntity` with `@Version`, `OutboxMessageEntity`).
+- [x] Synchronous payment integration: `PaymentServiceClient` calling `payment-service` at `/v1/payments/charge`.
+- [x] Checkout service (`CheckoutService`):
+  - Strict transaction boundary: synchronous call to `payment-service` for 1st share (25%) occurs strictly outside `@Transactional` blocks.
+  - Idempotent order processing based on `merchantOrderId`.
+  - Penny-rounding calculation with `HALF_UP`.
+  - Transactional Outbox publishing `OrderAuthorizedEvent` to `bnpl.orders.events`.
+- [x] Outbox publisher poller (`OutboxPublisherService`).
+- [x] REST endpoints: `POST /v1/orders/checkout`, `GET /v1/orders/{id}`.
+- [x] Unit tests for `CheckoutService` (4 tests passed).
 
 ---
 
 ## Active & Upcoming Phases
-
-### Phase 3: `checkout-service`
-- [ ] Liquibase migration for `checkout_schema` (`bnpl_orders`, `outbox_messages`).
-- [ ] JPA Entities (`BnplOrderEntity`, `OutboxMessageEntity`).
-- [ ] Checkout endpoint (`POST /v1/orders/checkout`) with strict transaction boundary (sync call to `payment-service` outside `@Transactional`).
-- [ ] Transactional Outbox publisher for `ORDER_AUTHORIZED` events.
-- [ ] Unit & Integration tests.
 
 ### Phase 4: `schedule-service` & Nightly Billing
 - [ ] Liquibase migration for `schedule_schema` (`payment_schedules`, `installments`, `shedlock`).
